@@ -74,6 +74,11 @@ From the shell: `hermes skillcheck status` (read-only).
 uv run --with pytest python -m pytest tests/ -q
 ```
 
+Run this from a checkout whose directory is named `skillcheck` (the default
+clone name): the repo root carries the plugin's `__init__.py`, and pytest's
+default import mode needs the root directory name to be a valid Python
+identifier.
+
 Admission check (same one the catalog CI runs):
 
 ```
