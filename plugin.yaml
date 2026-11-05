@@ -1,5 +1,5 @@
 name: skillcheck
-version: 0.1.0
+version: 0.2.0
 description: "CI for agent skills: snapshot every skill write, generate regression cases, re-run them against the candidate revision in narrowed child sessions, and report pass/fail diffs before you trust the change. Manual promote/revert - no automatic destructive writes."
 author: "Shridhar Kumar"
 requires_hermes: ">=0.22.0"
