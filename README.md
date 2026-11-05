@@ -6,8 +6,10 @@ that loop:
 
 1. **Watch** - plugin hooks (`pre_tool_call` / `post_tool_call` on
    `skill_manage` and on file writes into the skills directory, plus the
-   `on_skill_lifecycle` hook) notice every skill write and snapshot the
-   previous revision. Watching never blocks or modifies a write.
+   `on_skill_lifecycle` hook) notice supported in-band skill edits and
+   snapshot the previous revision when one exists (a create has no prior
+   state; out-of-band edits are detected by revision hash at run time,
+   without a snapshot). Watching never blocks or modifies a write.
 2. **Pin** - `skillcheck_generate` drafts synthetic regression cases from the
    skill's own definition: a brief, self-contained fixture data, deterministic
    checks (`contains` / `not_contains` / `regex`), and an optional LLM-judge
@@ -64,9 +66,10 @@ From the shell: `hermes skillcheck status` (read-only).
 - The LLM judge needs a capable model: judge no-verdict is always
   INCONCLUSIVE (never a pass), and small free-tier models may fail as
   judges while their deterministic contains/regex checks work fine.
-- A wait timeout stops skillcheck waiting, then cancels the child session via
-  the lifecycle API so a timed-out case cannot keep working in the
-  background; the cancel outcome is reported in the case detail.
+- A wait timeout stops skillcheck waiting, then requests cancellation of the
+  child session via the lifecycle API so a timed-out case does not keep
+  working in the background; the cancel outcome (accepted or refused, e.g.
+  when the run finished concurrently) is reported in the case detail.
 
 ## Development
 
