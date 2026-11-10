@@ -19,7 +19,7 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
-from .paths import data_dir, skill_dir
+from .paths import data_dir, resolve_skill_dir
 
 _lock = threading.RLock()
 _SAFE = re.compile(r"[^a-z0-9_-]+")
@@ -35,9 +35,13 @@ def _root(skill: str) -> Path:
 
 
 def _atomic_write(path: Path, text: str) -> None:
+    _atomic_write_bytes(path, text.encode("utf-8"))
+
+
+def _atomic_write_bytes(path: Path, data: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
-    tmp.write_text(text, encoding="utf-8")
+    tmp.write_bytes(data)
     os.replace(tmp, path)
 
 
@@ -50,9 +54,9 @@ def _read_json(path: Path, default: Any) -> Any:
 
 def revision_hash(skill: str) -> str:
     """sha256 over sorted (relpath, content-hash) of every file in the skill dir."""
-    root = skill_dir(skill)
+    root = resolve_skill_dir(skill)
     h = hashlib.sha256()
-    if not root.is_dir():
+    if root is None or not root.is_dir():
         return "absent"
     for p in sorted(root.rglob("*")):
         if p.is_file() and not any(part.startswith(".") for part in p.relative_to(root).parts):
@@ -61,19 +65,28 @@ def revision_hash(skill: str) -> str:
     return h.hexdigest()
 
 
-def skill_files(skill: str) -> dict[str, str]:
-    """{relative path: text} for every file in the skill dir (best effort)."""
-    root = skill_dir(skill)
-    out: dict[str, str] = {}
-    if not root.is_dir():
+def skill_files_bytes(skill: str) -> dict[str, bytes]:
+    """{relative path: raw bytes} for every non-dotfile in the validated skill
+    dir. Snapshots and restores travel as bytes so non-UTF-8 files round-trip
+    exactly. Invalid/unresolvable skill names yield {}."""
+    root = resolve_skill_dir(skill)
+    out: dict[str, bytes] = {}
+    if root is None or not root.is_dir():
         return out
     for p in sorted(root.rglob("*")):
         if p.is_file() and not any(part.startswith(".") for part in p.relative_to(root).parts):
             try:
-                out[str(p.relative_to(root))] = p.read_text(encoding="utf-8", errors="replace")
+                out[str(p.relative_to(root))] = p.read_bytes()
             except OSError:
                 continue
     return out
+
+
+def skill_files(skill: str) -> dict[str, str]:
+    """{relative path: text} for every file in the skill dir (best effort,
+    lossy decode for prompt building only - never used for snapshots)."""
+    return {rel: data.decode("utf-8", errors="replace")
+            for rel, data in skill_files_bytes(skill).items()}
 
 
 # --- cases ---------------------------------------------------------------
@@ -156,15 +169,16 @@ def tracked_skills() -> list[str]:
 
 def new_snapshot(skill: str, trigger: str) -> Optional[str]:
     """Copy the skill's current files aside. Returns snapshot id, or None if
-    the skill does not exist on disk yet (a create writes a new skill)."""
-    files = skill_files(skill)
+    the skill does not exist on disk yet (a create writes a new skill) or the
+    name fails validation."""
+    files = skill_files_bytes(skill)
     if not files:
         return None
     sid = f"{int(time.time())}-{os.getpid()}"
     dest = _root(skill) / "snapshots" / sid
     with _lock:
-        for rel, text in files.items():
-            _atomic_write(dest / rel, text)
+        for rel, data in files.items():
+            _atomic_write_bytes(dest / rel, data)
         _atomic_write(dest / "meta.json", json.dumps({
             "skill": skill, "snapshot_id": sid, "trigger": trigger,
             "created_at": time.time(), "revision_hash": revision_hash(skill),
@@ -180,15 +194,15 @@ def latest_snapshot(skill: str) -> Optional[str]:
     return ids[-1] if ids else None
 
 
-def snapshot_files(skill: str, snapshot_id: str) -> dict[str, str]:
+def snapshot_files(skill: str, snapshot_id: str) -> dict[str, bytes]:
     root = _root(skill) / "snapshots" / snapshot_id
-    out: dict[str, str] = {}
+    out: dict[str, bytes] = {}
     if not root.is_dir():
         return out
     for p in sorted(root.rglob("*")):
         if p.is_file() and p.name != "meta.json":
             try:
-                out[str(p.relative_to(root))] = p.read_text(encoding="utf-8", errors="replace")
+                out[str(p.relative_to(root))] = p.read_bytes()
             except OSError:
                 continue
     return out

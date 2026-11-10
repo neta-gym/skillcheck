@@ -8,9 +8,43 @@ may cache a home resolved at import time.
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
+from typing import Optional
 
 PLUGIN_NAME = "skillcheck"
+
+# Hermes's skill-name rule: letters, digits, '.', '_', '-' only; no path
+# separators, no '..' anywhere, no leading dot.
+_NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+NAME_RULE = ("letters, digits, '.', '_', '-' only; no path separators, "
+             "no '..', no leading dot")
+
+
+def valid_skill_name(name: str) -> bool:
+    """True when `name` passes Hermes's skill-name rule."""
+    n = str(name or "")
+    if not n or len(n) > 128:
+        return False
+    if n.startswith(".") or ".." in n or "/" in n or "\\" in n:
+        return False
+    return bool(_NAME_RE.match(n))
+
+
+def resolve_skill_dir(name: str) -> Optional[Path]:
+    """On-disk directory for `name`, or None unless the name passes the
+    skill-name rule AND the fully resolved path sits strictly inside the
+    resolved skills directory (symlinks cannot escape it)."""
+    if not valid_skill_name(name):
+        return None
+    try:
+        root = skills_dir().resolve(strict=False)
+        cand = skill_dir(name).resolve(strict=False)
+    except OSError:
+        return None
+    if cand == root or root not in cand.parents:
+        return None
+    return cand
 
 
 def hermes_home() -> Path:

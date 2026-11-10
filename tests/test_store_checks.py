@@ -20,7 +20,7 @@ def test_snapshot_and_restore_files(home, skill):
     assert sid
     (home / "skills" / skill / "SKILL.md").write_text("broken", encoding="utf-8")
     files = store.snapshot_files(skill, sid)
-    assert "TOTAL" in files["SKILL.md"]
+    assert b"TOTAL" in files["SKILL.md"]
     assert store.latest_snapshot(skill) == sid
 
 

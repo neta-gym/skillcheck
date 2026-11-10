@@ -21,7 +21,7 @@ def verdict(skill: str, run: dict[str, Any]) -> tuple[str, list[str]]:
     if any(r.get("inconclusive") for r in results.values()):
         notes.append("some cases inconclusive (judge offline / launch failure / timeout)")
     if not baseline:
-        return "FIRST-RUN", notes + ["no promoted baseline yet - review, then skillcheck_promote"]
+        return "FIRST-RUN", notes + ["no promoted baseline yet - review, then /skillcheck promote"]
     base_map = {r["case_id"]: bool(r.get("passed")) for r in baseline.get("results", [])}
     regressions = [cid for cid, r in results.items()
                    if base_map.get(cid) is True and not r["passed"]]
@@ -63,11 +63,11 @@ def render_run(skill: str, run: dict[str, Any], v: Optional[str] = None,
     if notes:
         lines += ["", *[f"note: {n}" for n in notes]]
     if v == "REGRESSION":
-        lines += ["", "next: review the failing cases. `skillcheck_revert` restores the last "
-                  "pre-write snapshot (manual, reversible); `skillcheck_promote` accepts the "
-                  "candidate once fixed."]
+        lines += ["", "next: review the failing cases. `/skillcheck revert` restores the last "
+                  "pre-write snapshot (manual, reversible, user-invoked only); "
+                  "`/skillcheck promote` accepts the candidate once fixed."]
     elif v == "FIRST-RUN":
-        lines += ["", "next: read the cases (`skillcheck_cases`), then `skillcheck_promote` "
+        lines += ["", "next: read the cases (`skillcheck_cases`), then `/skillcheck promote` "
                   "to set this run as the baseline."]
     return "\n".join(lines)
 

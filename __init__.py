@@ -16,8 +16,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from .core import cases as cases_mod
-from .core import detect, report, store
-from .core.paths import skill_dir
+from .core import detect, paths, report, store
 from .core.runner import run_cases
 
 logger = logging.getLogger(__name__)
@@ -30,6 +29,13 @@ _lock = threading.Lock()
 
 def _owner(task_id: str, session_id: str) -> str:
     return task_id or session_id or "default"
+
+
+def _invalid_name(name: str) -> Optional[str]:
+    """Refusal message when a skill name fails Hermes's skill-name rule."""
+    if not paths.valid_skill_name(name):
+        return f"skillcheck: refusing {name!r}: not a valid skill name ({paths.NAME_RULE})."
+    return None
 
 
 def _prune_pending() -> None:
@@ -52,6 +58,8 @@ def _on_pre_tool_call(tool_name: str = "", args: Optional[dict] = None, task_id:
         with _lock:
             _prune_pending()
             for w in writes:
+                if not paths.valid_skill_name(w.skill):
+                    continue
                 if (owner, tool_call_id, w.skill) in _pending:
                     continue
                 sid = store.new_snapshot(w.skill, trigger=f"{w.via}:{w.action}")
@@ -80,6 +88,8 @@ def _on_post_tool_call(tool_name: str = "", args: Optional[dict] = None, status:
         owner = _owner(task_id, session_id)
         with _lock:
             for w in writes:
+                if not paths.valid_skill_name(w.skill):
+                    continue
                 _pending.pop((owner, tool_call_id, w.skill), None)  # snapshot stays on disk
                 _mark_candidate(w, session_id)
     except Exception:
@@ -91,7 +101,7 @@ def _on_skill_lifecycle(action: str = "", skill_name: str = "", session_id: str 
     """Authoritative landed-mutation signal from Hermes itself."""
     try:
         write = detect.from_lifecycle(action, skill_name)
-        if write is not None:
+        if write is not None and paths.valid_skill_name(write.skill):
             _mark_candidate(write, session_id)
     except Exception:
         logger.debug("skillcheck on_skill_lifecycle failed", exc_info=True)
@@ -102,6 +112,9 @@ def _on_skill_lifecycle(action: str = "", skill_name: str = "", session_id: str 
 def _h_status(args: dict, **_: Any) -> str:
     name = str(args.get("name", "") or "").strip()
     if name:
+        bad = _invalid_name(name)
+        if bad:
+            return bad
         state = store.load_state(name)
         cases = store.load_cases(name)
         baseline = store.load_baseline(name)
@@ -123,15 +136,13 @@ def _h_generate(args: dict, ctx: Any = None, **_: Any) -> str:
     name = str(args.get("name", "") or "").strip()
     if not name:
         return "skillcheck_generate needs a skill name."
+    bad = _invalid_name(name)
+    if bad:
+        return bad
     if ctx is None:
         return "case generation needs the host LLM; call this tool from inside a session."
     count = int(args.get("count", 4) or 4)
     new_cases, note = cases_mod.generate_cases(ctx, name, count=count)
-    try:  # TEMP debug: surface the outcome where tests can read it
-        from .core.paths import data_dir as _dd
-        (_dd() / "debug.log").write_text(note, encoding="utf-8")
-    except Exception:
-        pass
     if not new_cases:
         return f"skillcheck: {note}"
     existing = {c["id"]: c for c in store.load_cases(name)}
@@ -147,6 +158,9 @@ def _h_cases(args: dict, **_: Any) -> str:
     name = str(args.get("name", "") or "").strip()
     if not name:
         return "skillcheck_cases needs a skill name."
+    bad = _invalid_name(name)
+    if bad:
+        return bad
     cases = store.load_cases(name)
     if not cases:
         return f"skillcheck: no cases for {name} yet - run skillcheck_generate first."
@@ -165,6 +179,9 @@ def _h_run(args: dict, ctx: Any = None, **_: Any) -> str:
     name = str(args.get("name", "") or "").strip()
     if not name:
         return "skillcheck_run needs a skill name."
+    bad = _invalid_name(name)
+    if bad:
+        return bad
     if ctx is None:
         return "runs need child sessions and the host LLM; call this tool from inside a session."
     cases = store.load_cases(name)
@@ -180,7 +197,7 @@ def _h_run(args: dict, ctx: Any = None, **_: Any) -> str:
     if v == "GREEN" and state.get("pending_candidate"):
         state["pending_candidate"]["last_verdict"] = "GREEN"
         store.save_state(name, state)
-        notes.append("candidate passed - promote it with skillcheck_promote to make it the baseline")
+        notes.append("candidate passed - promote it with /skillcheck promote to make it the baseline")
     return report.render_run(name, run, v, notes)
 
 
@@ -189,6 +206,9 @@ def _h_promote(args: dict, **_: Any) -> str:
     run_id = str(args.get("run_id", "") or "").strip()
     if not name:
         return "skillcheck_promote needs a skill name."
+    bad = _invalid_name(name)
+    if bad:
+        return bad
     run = store.get_run(name, run_id) if run_id else (store.load_runs(name, limit=1) or [None])[-1]
     if not run:
         return f"skillcheck: no run to promote for {name} - run skillcheck_run first."
@@ -209,10 +229,18 @@ def _h_promote(args: dict, **_: Any) -> str:
 
 def _h_revert(args: dict, **_: Any) -> str:
     """Manual, user-invoked restore of the latest pre-write snapshot. Takes a
-    safety snapshot of the CURRENT state first, so a revert is itself reversible."""
+    safety snapshot of the CURRENT state first, so a revert is itself reversible.
+
+    The skill name must pass Hermes's skill-name rule and resolve strictly
+    inside the skills directory; deletes and writes never leave that folder,
+    skip dotfiles the same way snapshots do, and restore raw bytes."""
     name = str(args.get("name", "") or "").strip()
     if not name:
         return "skillcheck_revert needs a skill name."
+    root = paths.resolve_skill_dir(name)
+    if root is None:
+        return (f"skillcheck: refusing revert for {name!r}: not a valid installed-skill "
+                f"name ({paths.NAME_RULE}), or it does not resolve inside the skills directory.")
     sid = store.latest_snapshot(name)
     if not sid:
         return f"skillcheck: no snapshot stored for {name}; nothing to revert to."
@@ -220,29 +248,60 @@ def _h_revert(args: dict, **_: Any) -> str:
     if not files:
         return f"skillcheck: snapshot {sid} is empty; refusing to revert."
     safety = store.new_snapshot(name, trigger="pre-revert")
-    root = skill_dir(name)
     keep = set(files)
-    removed, written = [], []
+    removed, written, skipped = [], [], []
+
+    def _inside(p: Path) -> bool:
+        try:
+            rp = p.resolve(strict=False)
+        except OSError:
+            return False
+        return rp != root and root in rp.parents
+
     if root.is_dir():
         for p in sorted(root.rglob("*")):
-            if p.is_file() and str(p.relative_to(root)) not in keep:
-                try:
-                    p.unlink()
-                    removed.append(str(p.relative_to(root)))
-                except OSError:
-                    pass
-    for rel, text in files.items():
+            if not p.is_file():
+                continue
+            rel_parts = p.relative_to(root).parts
+            if any(part.startswith(".") for part in rel_parts):
+                continue  # dotfiles were never snapshotted; leave them alone
+            rel = str(Path(*rel_parts))
+            if rel in keep:
+                continue
+            if not _inside(p):
+                skipped.append(rel)  # symlink or junction escaping the skill folder
+                continue
+            try:
+                p.unlink()
+                removed.append(rel)
+            except OSError:
+                pass
+    for rel, data in files.items():
+        parts = Path(rel).parts
+        if Path(rel).is_absolute() or ".." in parts or any(part.startswith(".") for part in parts):
+            skipped.append(rel)
+            continue
         dest = root / rel
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_text(text, encoding="utf-8")
-        written.append(rel)
+        try:
+            if not _inside(dest):  # checks symlinked parents before anything is created
+                skipped.append(rel)
+                continue
+            if dest.parent != root:
+                dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(data)
+            written.append(rel)
+        except OSError:
+            skipped.append(rel)
     state = store.load_state(name)
     state.pop("pending_candidate", None)
     store.save_state(name, state)
-    return (f"skillcheck: {name} reverted to snapshot {sid} "
-            f"({len(written)} files restored, {len(removed)} removed)."
-            + (f" Pre-revert state kept as snapshot {safety}." if safety else "")
-            + " Run skillcheck_run to confirm the restored revision still passes.")
+    out = (f"skillcheck: {name} reverted to snapshot {sid} "
+           f"({len(written)} files restored, {len(removed)} removed)."
+           + (f" Pre-revert state kept as snapshot {safety}." if safety else ""))
+    if skipped:
+        out += " Skipped (unsafe path): " + ", ".join(skipped) + "."
+    out += " Run skillcheck_run to confirm the restored revision still passes."
+    return out
 
 
 # --- registration ----------------------------------------------------------
@@ -295,23 +354,9 @@ def register(ctx: Any) -> None:
                 ["name"]),
         lambda args, **kw: _h_run(args, ctx=ctx, **kw),
         description="Run regression cases for a skill", emoji="🧪")
-    ctx.register_tool(
-        "skillcheck_promote", "skillcheck",
-        _schema("skillcheck_promote",
-                "Manually accept a run as the new green baseline for a skill. Refuses runs "
-                "with inconclusive cases.",
-                {**_NAME_PROP, "run_id": {"type": "string", "description": "Run to promote (default: latest)."}},
-                ["name"]),
-        lambda args, **kw: _h_promote(args, **kw),
-        description="Promote a run to baseline", emoji="🧪")
-    ctx.register_tool(
-        "skillcheck_revert", "skillcheck",
-        _schema("skillcheck_revert",
-                "Manually restore a skill's latest pre-write snapshot. Snapshots the current "
-                "state first so the revert is itself reversible.",
-                {**_NAME_PROP}, ["name"]),
-        lambda args, **kw: _h_revert(args, **kw),
-        description="Restore last pre-write snapshot", emoji="🧪")
+    # Promote and revert are deliberately NOT registered as model-callable
+    # tools: they change what the skill is (baseline) or rewrite files on disk,
+    # so they stay user-invoked only, via /skillcheck promote|revert or the CLI.
 
     def _slash(raw_args: str) -> str:
         parts = (raw_args or "").split()
@@ -337,19 +382,24 @@ def register(ctx: Any) -> None:
                          args_hint="<action> [skill]")
 
     def _cli_setup(sub: Any) -> None:
-        sub.add_argument("action", choices=["status", "cases"], nargs="?", default="status")
+        sub.add_argument("action", choices=["status", "cases", "promote", "revert"],
+                         nargs="?", default="status")
         sub.add_argument("name", nargs="?", default="")
 
     def _cli_handler(ns: Any) -> None:
         action = getattr(ns, "action", "status")
         name = getattr(ns, "name", "") or ""
-        if action == "cases" and name:
+        if action == "promote":
+            print(_h_promote({"name": name}))
+        elif action == "revert":
+            print(_h_revert({"name": name}))
+        elif action == "cases" and name:
             print(_h_cases({"name": name}))
         else:
             print(_h_status({"name": name}))
 
     try:
-        ctx.register_cli_command("skillcheck", "Skill regression CI (read-only status)",
+        ctx.register_cli_command("skillcheck", "Skill regression CI (status/cases; user-invoked promote/revert)",
                                  _cli_setup, _cli_handler)
     except Exception:
         logger.debug("skillcheck CLI command registration failed", exc_info=True)

@@ -75,7 +75,9 @@ def ctx(home, skill, monkeypatch):
 def test_register_wires_everything(ctx):
     assert set(ctx.hooks) == {"pre_tool_call", "post_tool_call", "on_skill_lifecycle"}
     assert set(ctx.tools) == {"skillcheck_status", "skillcheck_generate", "skillcheck_cases",
-                              "skillcheck_run", "skillcheck_promote", "skillcheck_revert"}
+                              "skillcheck_run"}
+    # promote/revert are user-invoked only: slash command, never model tools
+    assert "skillcheck_promote" not in ctx.tools and "skillcheck_revert" not in ctx.tools
     assert "skillcheck" in ctx.commands
 
 
@@ -94,7 +96,7 @@ def test_write_marks_candidate_and_snapshots(ctx, home, skill):
     assert state["pending_candidate"]["action"] == "patch"
     assert state["pending_candidate"]["revision_hash"] != before
     snap = store.latest_snapshot(skill)
-    assert snap and "TOTAL" in store.snapshot_files(skill, snap)["SKILL.md"]
+    assert snap and b"TOTAL" in store.snapshot_files(skill, snap)["SKILL.md"]
 
 
 def test_lifecycle_hook_marks_candidate(ctx, skill):
@@ -110,7 +112,7 @@ def test_run_first_run_then_promote_then_regression(ctx, skill):
     ctx.subagent_lifecycle.answers = ["The TOTAL is 7"]
     out = ctx.tools["skillcheck_run"]({"name": skill})
     assert "FIRST-RUN" in out and "1/1 passed" in out
-    out = ctx.tools["skillcheck_promote"]({"name": skill})
+    out = ctx.commands["skillcheck"]("promote " + skill)
     assert "baseline set" in out
     # candidate now fails the same case -> REGRESSION against the baseline
     ctx.subagent_lifecycle.answers = ["The answer is 7"]  # missing TOTAL
@@ -136,7 +138,7 @@ def test_revert_restores_snapshot_and_is_reversible(ctx, home, skill):
     ctx.hooks["post_tool_call"](tool_name="skill_manage",
                                 args={"operations": [{"action": "edit", "name": skill}]},
                                 status="ok", task_id="t", session_id="s", tool_call_id="c")
-    out = ctx.tools["skillcheck_revert"]({"name": skill})
+    out = ctx.commands["skillcheck"]("revert " + skill)
     assert "reverted to snapshot" in out
     assert (home / "skills" / skill / "SKILL.md").read_text() == original
     assert "Pre-revert state kept" in out  # the broken state is itself recoverable
@@ -149,7 +151,7 @@ def test_promote_refuses_inconclusive(ctx, skill):
                               "judge_rubric": "", "status": "draft"}])
     ctx.subagent_lifecycle.answers = [None]  # child produced nothing
     ctx.tools["skillcheck_run"]({"name": skill})
-    out = ctx.tools["skillcheck_promote"]({"name": skill})
+    out = ctx.commands["skillcheck"]("promote " + skill)
     assert "inconclusive" in out.lower() and store.load_baseline(skill) is None
 
 

@@ -22,10 +22,11 @@ that loop:
    prompt, so tests cannot touch real state.
 4. **Decide** - every run reports GREEN / REGRESSION / FIRST-RUN /
    INCONCLUSIVE against the promoted baseline, with per-case evidence.
-   `skillcheck_promote` accepts a run as the new baseline (refuses runs with
-   inconclusive cases). `skillcheck_revert` restores the last pre-write
+   `/skillcheck promote` accepts a run as the new baseline (refuses runs with
+   inconclusive cases). `/skillcheck revert` restores the last pre-write
    snapshot - manually, and only after snapshotting the current state so the
-   revert is itself reversible.
+   revert is itself reversible. Promote and revert are user-invoked only
+   (slash command or CLI); they are not registered as model tools.
 
 A REGRESSION verdict requires a promoted baseline: the case passed then and
 fails now. The plugin never calls anything a regression on first sight, never
@@ -35,10 +36,15 @@ blocks a write, and never rewrites a skill on its own.
 
 In a session: `/skillcheck status`, `/skillcheck generate <name>`,
 `/skillcheck cases <name>`, `/skillcheck run <name>`,
-`/skillcheck promote <name>`, `/skillcheck revert <name>` - or ask the agent;
-the same actions are registered as tools (`skillcheck_status`, ...).
+`/skillcheck promote <name>`, `/skillcheck revert <name>`.
 
-From the shell: `hermes skillcheck status` (read-only).
+Ask the agent and it can use the four registered tools (`skillcheck_status`,
+`skillcheck_generate`, `skillcheck_cases`, `skillcheck_run`). Promote and
+revert are NOT model tools - only you can run them, via the slash command or
+the CLI.
+
+From the shell: `hermes skillcheck status`, `hermes skillcheck cases <name>`,
+`hermes skillcheck promote <name>`, `hermes skillcheck revert <name>`.
 
 ## Honest limits
 
@@ -59,6 +65,12 @@ From the shell: `hermes skillcheck status` (read-only).
   REGRESSION verdict still fires) but there is no pre-write snapshot for
   `skillcheck_revert` to restore; it reports that honestly instead of
   guessing.
+- Skill names are validated everywhere (every tool and hook) against
+  Hermes's skill-name rule - letters, digits, `.`, `_`, `-`; no separators,
+  no `..`, no leading dot - and must resolve strictly inside the skills
+  directory. Revert deletes and writes only inside that validated folder,
+  skips dotfiles (they are never snapshotted), refuses symlink escapes, and
+  restores bytes exactly, so non-UTF-8 files survive a round trip.
 - Generated cases are drafts for human review. Cases whose "fixtures" look
   like a filename instead of inline data are flagged at generation, in
   skillcheck_cases, and in every run report (child sessions cannot open

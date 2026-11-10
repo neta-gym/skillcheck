@@ -1,6 +1,6 @@
 name: skillcheck
-version: 0.2.0
-description: "CI for agent skills: snapshot supported in-band skill edits, generate regression cases as human-review drafts, re-run them against the candidate revision in narrowed zero-tool child sessions, and report GREEN / REGRESSION / FIRST-RUN before you trust the change. Manual promote/revert - no automatic destructive writes."
+version: 0.2.1
+description: "CI for agent skills: snapshot supported in-band skill edits, generate regression cases as human-review drafts, re-run them against the candidate revision in narrowed zero-tool child sessions, and report GREEN / REGRESSION / FIRST-RUN before you trust the change. Promote/revert are user-invoked only (slash command or CLI, never model tools); revert validates the skill name, stays inside the skill folder, skips dotfiles and restores byte-exact."
 author: "Shridhar Kumar"
 requires_hermes: ">=0.22.0"
 provides_hooks:
@@ -12,6 +12,4 @@ provides_tools:
   - skillcheck_generate
   - skillcheck_cases
   - skillcheck_run
-  - skillcheck_promote
-  - skillcheck_revert
 tags: [evals, regression, testing, skills, reliability]
